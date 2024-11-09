@@ -9,22 +9,22 @@ import shutil
 from loguru import logger
 from websockets_proxy import Proxy, proxy_connect
 from fake_useragent import UserAgent
-import websockets  # 添加這行
+import websockets
 
-# 設置 logger 同時輸出到控制台和文件 grass.log
+# Set up logger to output to console and file grass.log
 logger.add("grass.log", format="{time} {level} {message}", level="INFO", filter=lambda record: "用户ID" in record["message"])
 
-# 計數器來跟踪每個ID成功運行的代理數量
+# Counter to track the number of proxies successfully running for each ID
 running_proxies_count = {}
 
-async def connect_to_wss(socks5_proxy, account_id, user_proxy_map, retry_delay=1):  # 修改重試間隔時間為1秒
+async def connect_to_wss(socks5_proxy, account_id, user_proxy_map, retry_delay=1):
     global running_proxies_count
     user_agent = UserAgent(os=['windows', 'macos', 'linux'], browsers='chrome')
     random_user_agent = user_agent.random
     device_id = str(uuid.uuid3(uuid.NAMESPACE_DNS, socks5_proxy))
     logger.info(device_id)
-    retries = 0  # 添加重試次數計數器
-    while True:  # 無限重試循環
+    retries = 0
+    while True:
         connected = False
         try:
             await asyncio.sleep(random.randint(1, 10) / 10)
@@ -42,9 +42,9 @@ async def connect_to_wss(socks5_proxy, account_id, user_proxy_map, retry_delay=1
                                      extra_headers=custom_headers) as websocket:
                 if account_id not in running_proxies_count:
                     running_proxies_count[account_id] = 0
-                running_proxies_count[account_id] += 1  # 成功連接後增加計數器
+                running_proxies_count[account_id] += 1
                 connected = True
-                retries = 0  # 成功連接後重置重試次數計數器
+                retries = 0
                 asyncio.create_task(send_ping(websocket))
 
                 while True:
@@ -53,13 +53,13 @@ async def connect_to_wss(socks5_proxy, account_id, user_proxy_map, retry_delay=1
                     logger.info(message)
                     await handle_message(message, websocket, device_id, account_id.split(':')[1], custom_headers['User-Agent'])
         except Exception as e:
-            retries += 1  # 增加重試次數計數器
-            logger.error(f"错误: {e}. 重试 {retries} 次...")
+            retries += 1
+            logger.error(f"Error: {e}. Retry {retries} times...")
             await asyncio.sleep(retry_delay)
         finally:
             if connected:
-                running_proxies_count[account_id] -= 1  # 連接關閉後減少計數器
-            logger.info(f"连接关闭: {socks5_proxy}, 用户ID: {account_id}, 当前成功运行的代理数量: {running_proxies_count.get(account_id, 0)}")
+                running_proxies_count[account_id] -= 1
+            logger.info(f"Connection closed: {socks5_proxy}, User ID: {account_id}, Current running proxies: {running_proxies_count.get(account_id, 0)}")
 
 def remove_proxy(socks5_proxy, account_id, user_proxy_map):
     try:
@@ -68,17 +68,15 @@ def remove_proxy(socks5_proxy, account_id, user_proxy_map):
         updated_lines = [line for line in lines if line.strip() != socks5_proxy]
         with open('local_proxies.txt', 'w') as file:
             file.writelines(updated_lines)
-        logger.info(f"代理 '{socks5_proxy}' 已从文件中移除。")
+        logger.info(f"Proxy '{socks5_proxy}' removed from file.")
         
-        # 更新 user_proxy_map
         if account_id in user_proxy_map:
             user_proxy_map[account_id].remove(socks5_proxy)
         
-        # 確保計數器也被更新
         if account_id in running_proxies_count and running_proxies_count[account_id] > 0:
             running_proxies_count[account_id] -= 1
     except Exception as e:
-        logger.error(f"移除代理失败: {e}")
+        logger.error(f"Failed to remove proxy: {e}")
 
 async def send_ping(websocket):
     while True:
@@ -88,7 +86,7 @@ async def send_ping(websocket):
             await websocket.send(send_message)
             await asyncio.sleep(5)
         except websockets.exceptions.ConnectionClosedError as e:
-            logger.error(f"连接关闭错误: {e}")
+            logger.error(f"Connection closed error: {e}")
             break
 
 async def handle_message(message, websocket, device_id, user_id, user_agent):
@@ -112,19 +110,19 @@ async def handle_message(message, websocket, device_id, user_id, user_agent):
         logger.debug(pong_response)
         await websocket.send(json.dumps(pong_response))
 
-async def display_proxy_info(user_proxy_map, interval=30):  # 修改間隔時間為30秒
+async def display_proxy_info(user_proxy_map, interval=30):
     global running_proxies_count
     while True:
         for account_id, proxies in user_proxy_map.items():
-            log_message = f"用户ID: {account_id} 分配到的代理数量: {len(proxies)} 成功运行的代理数量: {running_proxies_count.get(account_id, 0)}"
-            logger.info(log_message)  # 同時輸出到控制台和文件 grass.log
+            log_message = f"User ID: {account_id} Assigned proxies: {len(proxies)} Running proxies: {running_proxies_count.get(account_id, 0)}"
+            logger.info(log_message)
         await asyncio.sleep(interval)
 
-async def clear_log(interval=1800):  # 每30分鐘清空一次日誌
+async def clear_log(interval=1800):
     while True:
         with open('grass.log', 'w') as file:
             file.truncate(0)
-        logger.info("日志文件已清空")
+        logger.info("Log file cleared")
         await asyncio.sleep(interval)
 
 async def main():
@@ -132,32 +130,28 @@ async def main():
         with open('user_id.txt', 'r') as file:
             accounts = file.read().splitlines()
     except Exception as e:
-        logger.error(f"读取用户ID失败: {e}")
+        logger.error(f"Failed to read user IDs: {e}")
         return
 
     try:
         with open('local_proxies.txt', 'r') as file:
             local_proxies = file.read().splitlines()
     except Exception as e:
-        logger.error(f"读取代理列表失败: {e}")
+        logger.error(f"Failed to read proxy list: {e}")
         return
 
     if len(accounts) * len(local_proxies) < 1:
-        logger.error("用户ID数量多于代理数量，无法分配。")
+        logger.error("More user IDs than proxies, cannot allocate.")
         return
 
     tasks = []
     user_proxy_map = {account: [] for account in accounts}
 
-    # 交替分配代理給ID
     for index, proxy in enumerate(local_proxies):
         account = accounts[index % len(accounts)]
         user_proxy_map[account].append(proxy)
 
-    # 添加定時輸出代理信息的任務
     tasks.append(asyncio.ensure_future(display_proxy_info(user_proxy_map)))
-
-    # 添加定時清空日誌文件的任務
     tasks.append(asyncio.ensure_future(clear_log()))
 
     for account, proxies in user_proxy_map.items():
