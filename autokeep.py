@@ -120,6 +120,13 @@ async def display_proxy_info(user_proxy_map, interval=30):  # 修改間隔時間
             logger.info(log_message)  # 同時輸出到控制台和文件 grass.log
         await asyncio.sleep(interval)
 
+async def clear_log(interval=1800):  # 每30分鐘清空一次日誌
+    while True:
+        with open('grass.log', 'w') as file:
+            file.truncate(0)
+        logger.info("日志文件已清空")
+        await asyncio.sleep(interval)
+
 async def main():
     try:
         with open('user_id.txt', 'r') as file:
@@ -149,6 +156,9 @@ async def main():
 
     # 添加定時輸出代理信息的任務
     tasks.append(asyncio.ensure_future(display_proxy_info(user_proxy_map)))
+
+    # 添加定時清空日誌文件的任務
+    tasks.append(asyncio.ensure_future(clear_log()))
 
     for account, proxies in user_proxy_map.items():
         for proxy in proxies:
