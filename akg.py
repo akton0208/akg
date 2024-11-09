@@ -9,22 +9,22 @@ import shutil
 from loguru import logger
 from websockets_proxy import Proxy, proxy_connect
 from fake_useragent import UserAgent
-import websockets
+import websockets  # Add this line
 
-# Set up logger to output to console and file grass.log
-logger.add("grass.log", format="{time} {level} {message}", level="INFO", filter=lambda record: "用户ID" in record["message"])
+# Set up logger to output to both console and file grass.log
+logger.add("grass.log", format="{time} {level} {message}", level="INFO", filter=lambda record: "UserID" in record["message"])
 
 # Counter to track the number of proxies successfully running for each ID
 running_proxies_count = {}
 
-async def connect_to_wss(socks5_proxy, account_id, user_proxy_map, retry_delay=1):
+async def connect_to_wss(socks5_proxy, account_id, user_proxy_map, retry_delay=1):  # Modify retry interval to 1 second
     global running_proxies_count
     user_agent = UserAgent(os=['windows', 'macos', 'linux'], browsers='chrome')
     random_user_agent = user_agent.random
     device_id = str(uuid.uuid3(uuid.NAMESPACE_DNS, socks5_proxy))
     logger.info(device_id)
-    retries = 0
-    while True:
+    retries = 0  # Add retry counter
+    while True:  # Infinite retry loop
         connected = False
         try:
             await asyncio.sleep(random.randint(1, 10) / 10)
@@ -42,9 +42,9 @@ async def connect_to_wss(socks5_proxy, account_id, user_proxy_map, retry_delay=1
                                      extra_headers=custom_headers) as websocket:
                 if account_id not in running_proxies_count:
                     running_proxies_count[account_id] = 0
-                running_proxies_count[account_id] += 1
+                running_proxies_count[account_id] += 1  # Increment counter on successful connection
                 connected = True
-                retries = 0
+                retries = 0  # Reset retry counter on successful connection
                 asyncio.create_task(send_ping(websocket))
 
                 while True:
@@ -53,13 +53,13 @@ async def connect_to_wss(socks5_proxy, account_id, user_proxy_map, retry_delay=1
                     logger.info(message)
                     await handle_message(message, websocket, device_id, account_id.split(':')[1], custom_headers['User-Agent'])
         except Exception as e:
-            retries += 1
-            logger.error(f"Error: {e}. Retry {retries} times...")
+            retries += 1  # Increment retry counter
+            logger.error(f"Error: {e}. Retrying {retries} times...")
             await asyncio.sleep(retry_delay)
         finally:
             if connected:
-                running_proxies_count[account_id] -= 1
-            logger.info(f"Connection closed: {socks5_proxy}, User ID: {account_id}, Current running proxies: {running_proxies_count.get(account_id, 0)}")
+                running_proxies_count[account_id] -= 1  # Decrement counter on connection close
+            logger.info(f"Connection closed: {socks5_proxy}, UserID: {account_id}, Current successful proxies: {running_proxies_count.get(account_id, 0)}")
 
 def remove_proxy(socks5_proxy, account_id, user_proxy_map):
     try:
@@ -70,9 +70,11 @@ def remove_proxy(socks5_proxy, account_id, user_proxy_map):
             file.writelines(updated_lines)
         logger.info(f"Proxy '{socks5_proxy}' removed from file.")
         
+        # Update user_proxy_map
         if account_id in user_proxy_map:
             user_proxy_map[account_id].remove(socks5_proxy)
         
+        # Ensure counter is also updated
         if account_id in running_proxies_count and running_proxies_count[account_id] > 0:
             running_proxies_count[account_id] -= 1
     except Exception as e:
@@ -110,15 +112,15 @@ async def handle_message(message, websocket, device_id, user_id, user_agent):
         logger.debug(pong_response)
         await websocket.send(json.dumps(pong_response))
 
-async def display_proxy_info(user_proxy_map, interval=30):
+async def display_proxy_info(user_proxy_map, interval=30):  # Modify interval to 30 seconds
     global running_proxies_count
     while True:
         for account_id, proxies in user_proxy_map.items():
-            log_message = f"User ID: {account_id} Assigned proxies: {len(proxies)} Running proxies: {running_proxies_count.get(account_id, 0)}"
-            logger.info(log_message)
+            log_message = f"UserID: {account_id} Assigned proxies: {len(proxies)} Successfully running proxies: {running_proxies_count.get(account_id, 0)}"
+            logger.info(log_message)  # Output to both console and file grass.log
         await asyncio.sleep(interval)
 
-async def clear_log(interval=1800):
+async def clear_log(interval=1800):  # Clear log every 30 minutes
     while True:
         with open('grass.log', 'w') as file:
             file.truncate(0)
@@ -141,17 +143,21 @@ async def main():
         return
 
     if len(accounts) * len(local_proxies) < 1:
-        logger.error("More user IDs than proxies, cannot allocate.")
+        logger.error("Number of user IDs exceeds number of proxies, cannot assign.")
         return
 
     tasks = []
     user_proxy_map = {account: [] for account in accounts}
 
+    # Alternately assign proxies to IDs
     for index, proxy in enumerate(local_proxies):
         account = accounts[index % len(accounts)]
         user_proxy_map[account].append(proxy)
 
+    # Add task to periodically output proxy info
     tasks.append(asyncio.ensure_future(display_proxy_info(user_proxy_map)))
+
+    # Add task to periodically clear log file
     tasks.append(asyncio.ensure_future(clear_log()))
 
     for account, proxies in user_proxy_map.items():
