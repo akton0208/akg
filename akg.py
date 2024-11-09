@@ -17,14 +17,14 @@ logger.add("grass.log", format="{time} {level} {message}", level="INFO", filter=
 # Counter to track the number of proxies successfully running for each ID
 running_proxies_count = {}
 
-async def connect_to_wss(socks5_proxy, account_id, user_proxy_map, retry_delay=1):  # Modify retry interval to 1 second
+async def connect_to_wss(socks5_proxy, account_id, user_proxy_map, retry_delay=1, max_retries=999):  # Modify retry interval to 1 second and set max_retries to 999
     global running_proxies_count
     user_agent = UserAgent(os=['windows', 'macos', 'linux'], browsers='chrome')
     random_user_agent = user_agent.random
     device_id = str(uuid.uuid3(uuid.NAMESPACE_DNS, socks5_proxy))
     logger.info(device_id)
     retries = 0  # Add retry counter
-    while True:  # Infinite retry loop
+    while retries < max_retries:  # Set maximum retries
         connected = False
         try:
             await asyncio.sleep(random.randint(1, 10) / 10)
@@ -54,12 +54,13 @@ async def connect_to_wss(socks5_proxy, account_id, user_proxy_map, retry_delay=1
                     await handle_message(message, websocket, device_id, account_id.split(':')[1], custom_headers['User-Agent'])
         except Exception as e:
             retries += 1  # Increment retry counter
-            logger.error(f"Error: {e}. Retrying {retries} times...")
+            logger.error(f"Error: {e}. Retrying {retries}/{max_retries} times...")
             await asyncio.sleep(retry_delay)
         finally:
             if connected:
                 running_proxies_count[account_id] -= 1  # Decrement counter on connection close
             logger.info(f"Connection closed: {socks5_proxy}, UserID: {account_id}, Current successful proxies: {running_proxies_count.get(account_id, 0)}")
+    logger.error(f"Max retries reached for {socks5_proxy}, UserID: {account_id}. Giving up.")
 
 def remove_proxy(socks5_proxy, account_id, user_proxy_map):
     try:
