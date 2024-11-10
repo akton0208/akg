@@ -4,13 +4,15 @@ import ssl
 import json
 import time
 import uuid
+import requests
+import shutil
 from loguru import logger
 from websockets_proxy import Proxy, proxy_connect
 from fake_useragent import UserAgent
 import websockets
 
-# Import the proxy score function
-from proxy_score import get_network_score
+from better_proxy import Proxy  # 假设有一个 Proxy 类用来处理代理
+from proxy_score import ProxyScoreManager  # 假设副脚本名称为 proxy_score.py
 
 # Set up logger to output to both console and file grass.log
 logger.add("grass.log", format="{time} {level} {message}", level="INFO", filter=lambda record: "UserID" in record["message"])
@@ -18,20 +20,13 @@ logger.add("grass.log", format="{time} {level} {message}", level="INFO", filter=
 # Counter to track the number of proxies successfully running for each ID
 running_proxies_count = {}
 
-async def connect_to_wss(socks5_proxy, username, password, user_proxy_map, retry_delay=10, max_retries=20):
+async def connect_to_wss(socks5_proxy, username, password, user_proxy_map, proxy_score_manager, retry_delay=10, max_retries=20):
     global running_proxies_count
     user_agent = UserAgent(os=['windows', 'macos', 'linux'], browsers='chrome')
     random_user_agent = user_agent.random
     device_id = str(uuid.uuid3(uuid.NAMESPACE_DNS, socks5_proxy))
     logger.info(device_id)
-    
-    # Get the proxy's network score before attempting to connect
-    network_score = get_network_score(socks5_proxy)
-    if network_score is None or network_score < 50:  # Assuming score less than 50 is not ideal
-        logger.error(f"Skipping proxy {socks5_proxy} due to low network score: {network_score}")
-        return
-    
-    retries = 0
+    retries = 0  
     while retries < max_retries:
         connected = False
         try:
@@ -46,13 +41,21 @@ async def connect_to_wss(socks5_proxy, username, password, user_proxy_map, retry
             uri = random.choice(urilist)
             server_hostname = "proxy.wynd.network"
             proxy = Proxy.from_url(socks5_proxy)
+            
+            # 代理评分检查
+            min_score = 80  # 假设设置了一个最低分数要求
+            if not await proxy_score_manager.handle_proxy_score(socks5_proxy, min_score, username):
+                logger.error(f"代理 {socks5_proxy} 不符合要求，跳过。")
+                return  # 如果评分不合格则跳过连接
+
+            # 如果代理评分合格，继续执行连接
             async with proxy_connect(uri, proxy=proxy, ssl=ssl_context, server_hostname=server_hostname,
                                      extra_headers=custom_headers) as websocket:
                 if username not in running_proxies_count:
                     running_proxies_count[username] = 0
-                running_proxies_count[username] += 1
+                running_proxies_count[username] += 1  
                 connected = True
-                retries = 0
+                retries = 0  
                 asyncio.create_task(send_ping(websocket))
 
                 while True:
@@ -61,35 +64,16 @@ async def connect_to_wss(socks5_proxy, username, password, user_proxy_map, retry
                     logger.info(message)
                     await handle_message(message, websocket, device_id, username, password, custom_headers['User-Agent'])
         except Exception as e:
-            retries += 1
+            retries += 1  
             logger.error(f"Error: {e}. Retrying {retries}/{max_retries} times...")
             await asyncio.sleep(retry_delay)
         finally:
             if connected:
-                running_proxies_count[username] -= 1
+                running_proxies_count[username] -= 1  
             logger.info(f"Connection closed: {socks5_proxy}, Username: {username}, Current successful proxies: {running_proxies_count.get(username, 0)}")
     
     logger.error(f"Max retries reached for {socks5_proxy}, Username: {username}. Removing proxy.")
     remove_proxy(socks5_proxy, username, user_proxy_map)
-
-def remove_proxy(socks5_proxy, username, user_proxy_map):
-    try:
-        with open('local_proxies.txt', 'r') as file:
-            lines = file.readlines()
-        updated_lines = [line for line in lines if line.strip() != socks5_proxy]
-        with open('local_proxies.txt', 'w') as file:
-            file.writelines(updated_lines)
-        logger.info(f"Proxy '{socks5_proxy}' removed from file.")
-        
-        # Update user_proxy_map
-        if username in user_proxy_map:
-            user_proxy_map[username].remove(socks5_proxy)
-        
-        # Ensure counter is also updated
-        if username in running_proxies_count and running_proxies_count[username] > 0:
-            running_proxies_count[username] -= 1
-    except Exception as e:
-        logger.error(f"Failed to remove proxy: {e}")
 
 async def send_ping(websocket):
     while True:
@@ -109,8 +93,8 @@ async def handle_message(message, websocket, device_id, username, password, user
             "origin_action": "AUTH",
             "result": {
                 "browser_id": device_id,
-                "username": username,  # Use username for authentication
-                "password": password,  # Use password for authentication
+                "username": username,  
+                "password": password,  
                 "user_agent": user_agent,
                 "timestamp": int(time.time()),
                 "device_type": "desktop",
@@ -124,15 +108,15 @@ async def handle_message(message, websocket, device_id, username, password, user
         logger.debug(pong_response)
         await websocket.send(json.dumps(pong_response))
 
-async def display_proxy_info(user_proxy_map, interval=30):
+async def display_proxy_info(user_proxy_map, interval=30): 
     global running_proxies_count
     while True:
         for username, proxies in user_proxy_map.items():
             log_message = f"Username: {username} Assigned proxies: {len(proxies)} Successfully running proxies: {running_proxies_count.get(username, 0)}"
-            logger.info(log_message)  # Output to both console and file grass.log
+            logger.info(log_message)
         await asyncio.sleep(interval)
 
-async def clear_log(interval=1800):  # Clear log every 30 minutes
+async def clear_log(interval=1800):  
     while True:
         with open('grass.log', 'w') as file:
             file.truncate(0)
@@ -140,9 +124,10 @@ async def clear_log(interval=1800):  # Clear log every 30 minutes
         await asyncio.sleep(interval)
 
 async def main():
+    # 读取账户信息和代理列表
     try:
         with open('user_credentials.txt', 'r') as file:
-            accounts = [line.split(":") for line in file.read().splitlines()]  # Expect username:password format
+            accounts = [line.split(":") for line in file.read().splitlines()]  
     except Exception as e:
         logger.error(f"Failed to read user credentials: {e}")
         return
@@ -159,24 +144,26 @@ async def main():
         return
 
     tasks = []
-    user_proxy_map = {account[0]: [] for account in accounts}  # Use username as key
+    user_proxy_map = {account[0]: [] for account in accounts}  
 
-    # Alternately assign proxies to IDs
     for index, proxy in enumerate(local_proxies):
         account = accounts[index % len(accounts)]
-        username, password = account  # Extract username and password
+        username, password = account  
         user_proxy_map[username].append(proxy)
 
-    # Add task to periodically output proxy info
-    tasks.append(asyncio.ensure_future(display_proxy_info(user_proxy_map)))
+    # 实例化 ProxyScoreManager
+    db = None  # 假设这里传入您的数据库连接对象
+    proxy_score_manager = ProxyScoreManager(db)
 
-    # Add task to periodically clear log file
+    # 启动显示代理信息和清理日志的任务
+    tasks.append(asyncio.ensure_future(display_proxy_info(user_proxy_map)))
     tasks.append(asyncio.ensure_future(clear_log()))
 
+    # 启动连接任务并传递 proxy_score_manager
     for account, proxies in user_proxy_map.items():
         username, password = account, next(p for u, p in accounts if u == account)
         for proxy in proxies:
-            tasks.append(asyncio.ensure_future(connect_to_wss(proxy, username, password, user_proxy_map)))
+            tasks.append(asyncio.ensure_future(connect_to_wss(proxy, username, password, user_proxy_map, proxy_score_manager)))
 
     await asyncio.gather(*tasks)
 
