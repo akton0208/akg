@@ -3,4 +3,5 @@ asyncio
 loguru
 websockets_proxy
 fake_useragent
+PySocks
 websockets==12.0
