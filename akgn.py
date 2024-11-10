@@ -4,13 +4,13 @@ import ssl
 import json
 import time
 import uuid
-import requests
-import shutil
 from loguru import logger
 from websockets_proxy import Proxy, proxy_connect
 from fake_useragent import UserAgent
 import websockets
-from network_score import fetch_score  # 引用從 network_score.py 提取 Network Score 的功能
+
+# Import the proxy score function
+from proxy_score import get_network_score
 
 # Set up logger to output to both console and file grass.log
 logger.add("grass.log", format="{time} {level} {message}", level="INFO", filter=lambda record: "UserID" in record["message"])
@@ -18,14 +18,21 @@ logger.add("grass.log", format="{time} {level} {message}", level="INFO", filter=
 # Counter to track the number of proxies successfully running for each ID
 running_proxies_count = {}
 
-async def connect_to_wss(socks5_proxy, username, password, user_proxy_map, retry_delay=10, max_retries=20):  # Modify retry interval to 10 second and set max_retries to 20
+async def connect_to_wss(socks5_proxy, username, password, user_proxy_map, retry_delay=10, max_retries=20):
     global running_proxies_count
     user_agent = UserAgent(os=['windows', 'macos', 'linux'], browsers='chrome')
     random_user_agent = user_agent.random
     device_id = str(uuid.uuid3(uuid.NAMESPACE_DNS, socks5_proxy))
     logger.info(device_id)
-    retries = 0  # Add retry counter
-    while retries < max_retries:  # Set maximum retries
+    
+    # Get the proxy's network score before attempting to connect
+    network_score = get_network_score(socks5_proxy)
+    if network_score is None or network_score < 50:  # Assuming score less than 50 is not ideal
+        logger.error(f"Skipping proxy {socks5_proxy} due to low network score: {network_score}")
+        return
+    
+    retries = 0
+    while retries < max_retries:
         connected = False
         try:
             await asyncio.sleep(random.randint(1, 10) / 10)
@@ -43,14 +50,10 @@ async def connect_to_wss(socks5_proxy, username, password, user_proxy_map, retry
                                      extra_headers=custom_headers) as websocket:
                 if username not in running_proxies_count:
                     running_proxies_count[username] = 0
-                running_proxies_count[username] += 1  # Increment counter on successful connection
+                running_proxies_count[username] += 1
                 connected = True
-                retries = 0  # Reset retry counter on successful connection
+                retries = 0
                 asyncio.create_task(send_ping(websocket))
-
-                # Fetch Network Score after successful connection
-                proxy_score = await fetch_score(username, socks5_proxy)  # Call fetch_score from network_score.py
-                logger.info(f"Network Score for {username}: {proxy_score}")
 
                 while True:
                     response = await websocket.recv()
@@ -58,15 +61,14 @@ async def connect_to_wss(socks5_proxy, username, password, user_proxy_map, retry
                     logger.info(message)
                     await handle_message(message, websocket, device_id, username, password, custom_headers['User-Agent'])
         except Exception as e:
-            retries += 1  # Increment retry counter
+            retries += 1
             logger.error(f"Error: {e}. Retrying {retries}/{max_retries} times...")
             await asyncio.sleep(retry_delay)
         finally:
             if connected:
-                running_proxies_count[username] -= 1  # Decrement counter on connection close
+                running_proxies_count[username] -= 1
             logger.info(f"Connection closed: {socks5_proxy}, Username: {username}, Current successful proxies: {running_proxies_count.get(username, 0)}")
     
-    # If max retries reached, remove the proxy
     logger.error(f"Max retries reached for {socks5_proxy}, Username: {username}. Removing proxy.")
     remove_proxy(socks5_proxy, username, user_proxy_map)
 
@@ -122,7 +124,7 @@ async def handle_message(message, websocket, device_id, username, password, user
         logger.debug(pong_response)
         await websocket.send(json.dumps(pong_response))
 
-async def display_proxy_info(user_proxy_map, interval=30):  # Modify interval to 30 seconds
+async def display_proxy_info(user_proxy_map, interval=30):
     global running_proxies_count
     while True:
         for username, proxies in user_proxy_map.items():
