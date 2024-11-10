@@ -9,7 +9,7 @@ import shutil
 from loguru import logger
 from websockets_proxy import Proxy, proxy_connect
 from fake_useragent import UserAgent
-import websockets  # Add this line
+import websockets
 
 # Set up logger to output to both console and file grass.log
 logger.add("grass.log", format="{time} {level} {message}", level="INFO", filter=lambda record: "UserID" in record["message"])
@@ -17,7 +17,7 @@ logger.add("grass.log", format="{time} {level} {message}", level="INFO", filter=
 # Counter to track the number of proxies successfully running for each ID
 running_proxies_count = {}
 
-async def connect_to_wss(socks5_proxy, account_id, user_proxy_map, retry_delay=10, max_retries=20):  # Modify retry interval to 1 second and set max_retries to 999
+async def connect_to_wss(socks5_proxy, account_id, user_proxy_map, retry_delay=10, max_retries=20):  # Modify retry interval to 10 second and set max_retries to 20
     global running_proxies_count
     user_agent = UserAgent(os=['windows', 'macos', 'linux'], browsers='chrome')
     random_user_agent = user_agent.random
