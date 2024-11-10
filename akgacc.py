@@ -6,6 +6,7 @@ import time
 import uuid
 import requests
 import shutil
+import aiohttp
 from loguru import logger
 from websockets_proxy import Proxy, proxy_connect
 from fake_useragent import UserAgent
@@ -17,14 +18,42 @@ logger.add("grass.log", format="{time} {level} {message}", level="INFO", filter=
 # Counter to track the number of proxies successfully running for each ID
 running_proxies_count = {}
 
-async def connect_to_wss(socks5_proxy, username, password, user_proxy_map, retry_delay=10, max_retries=20):  # Modify retry interval to 10 second and set max_retries to 20
+async def login_and_get_user_id(username, password):
+    """Login and retrieve userId and accessToken."""
+    url = 'https://api.getgrass.io/login'
+    json_data = {
+        'password': password,
+        'username': username,
+    }
+
+    async with aiohttp.ClientSession() as session:
+        response = await session.post(url, json=json_data)
+        res_json = await response.json()
+
+        if res_json.get("error"):
+            raise Exception(f"Login failed: {res_json['error']['message']}")
+        
+        user_id = res_json["result"]["data"]["userId"]
+        access_token = res_json["result"]["data"]["accessToken"]
+        return user_id, access_token
+
+
+async def connect_to_wss(socks5_proxy, username, password, user_proxy_map, retry_delay=10, max_retries=20):
     global running_proxies_count
     user_agent = UserAgent(os=['windows', 'macos', 'linux'], browsers='chrome')
     random_user_agent = user_agent.random
     device_id = str(uuid.uuid3(uuid.NAMESPACE_DNS, socks5_proxy))
     logger.info(device_id)
     retries = 0  # Add retry counter
-    while retries < max_retries:  # Set maximum retries
+    
+    # Log in and get userId and accessToken
+    try:
+        user_id, access_token = await login_and_get_user_id(username, password)  # Add your login function here
+    except Exception as e:
+        logger.error(f"Failed to login for {username}: {e}")
+        return
+
+    while retries < max_retries:
         connected = False
         try:
             await asyncio.sleep(random.randint(1, 10) / 10)
@@ -38,6 +67,7 @@ async def connect_to_wss(socks5_proxy, username, password, user_proxy_map, retry
             uri = random.choice(urilist)
             server_hostname = "proxy.wynd.network"
             proxy = Proxy.from_url(socks5_proxy)
+
             async with proxy_connect(uri, proxy=proxy, ssl=ssl_context, server_hostname=server_hostname,
                                      extra_headers=custom_headers) as websocket:
                 if username not in running_proxies_count:
@@ -51,7 +81,8 @@ async def connect_to_wss(socks5_proxy, username, password, user_proxy_map, retry
                     response = await websocket.recv()
                     message = json.loads(response)
                     logger.info(message)
-                    await handle_message(message, websocket, device_id, username, password, custom_headers['User-Agent'])
+                    await handle_message(message, websocket, device_id, username, password, custom_headers['User-Agent'], user_id, access_token)
+
         except Exception as e:
             retries += 1  # Increment retry counter
             logger.error(f"Error: {e}. Retrying {retries}/{max_retries} times...")
@@ -95,7 +126,7 @@ async def send_ping(websocket):
             logger.error(f"Connection closed error: {e}")
             break
 
-async def handle_message(message, websocket, device_id, username, password, user_agent):
+async def handle_message(message, websocket, device_id, username, password, user_agent, user_id, access_token):
     if message.get("action") == "AUTH":
         auth_response = {
             "id": message["id"],
@@ -108,6 +139,8 @@ async def handle_message(message, websocket, device_id, username, password, user
                 "timestamp": int(time.time()),
                 "device_type": "desktop",
                 "version": "4.28.2",
+                "user_id": user_id,  # Use userId for authentication
+                "access_token": access_token,  # Use accessToken for authentication
             }
         }
         logger.debug(auth_response)
