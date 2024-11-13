@@ -1,3 +1,4 @@
+#for ID login using socks5 or http or https
 import websockets
 import sys
 import asyncio
