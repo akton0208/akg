@@ -12,9 +12,9 @@ import socket
 from fake_useragent import UserAgent
 import time
 
-# Configure the logger to show the user number first, followed by email, in the log messages
+# Configure the logger to show the email in the log messages
 logger.remove()
-logger.add(sys.stdout, format="{extra[user_number]:<3} | {extra[email]:<20} | {level} | {message}", level="INFO")
+logger.add(sys.stdout, format="{extra[email]:<20} | {level} | {message}", level="INFO")
 
 used_proxies = set()
 unused_proxies = []
@@ -55,10 +55,10 @@ async def get_proxy_session(proxy):
     else:
         raise ValueError(f"Invalid proxy object type: {type(proxy)}")
 
-async def login_and_get_user_id(email, password, user_number):
+async def login_and_get_user_id(email, password):
     """Login using email and password to get user_id and access_token"""
     if email in user_id_cache:
-        return user_id_cache[email], None, logger.bind(email=email, user_number=user_number)  # Add user_number to logger context
+        return user_id_cache[email], None, logger.bind(email=email)  # Use cached user_id
 
     url = 'https://api.getgrass.io/login'
     json_data = {
@@ -66,7 +66,7 @@ async def login_and_get_user_id(email, password, user_number):
         'username': email,
     }
 
-    user_logger = logger.bind(email=email, user_number=user_number)  # Add user_number to logger context
+    user_logger = logger.bind(email=email)
 
     async with aiohttp.ClientSession() as session:
         user_logger.info(f"Sending login request for {email}")
@@ -89,7 +89,7 @@ async def login_and_get_user_id(email, password, user_number):
 
         return user_id, access_token, user_logger
 
-async def handle_websocket_connection(websocket, email, user_id, user_number, user_logger):
+async def handle_websocket_connection(websocket, email, user_id, device_id, user_logger):
     async def send_ping():
         while True:
             try:
@@ -117,16 +117,17 @@ async def handle_websocket_connection(websocket, email, user_id, user_number, us
             user_logger.debug(pong_response)
             await websocket.send(json.dumps(pong_response))
 
-async def connect_to_wss(email, socks5_proxy, user_id, user_number):
+async def connect_to_wss(email, socks5_proxy, user_id):
     user_agent = UserAgent(os=['windows', 'macos', 'linux'], browsers='chrome')
     random_user_agent = user_agent.random
+    device_id = str(uuid.uuid3(uuid.NAMESPACE_DNS, socks5_proxy))
     
-    user_logger = logger.bind(email=email, user_number=user_number)
+    user_logger = logger.bind(email=email)
     
-    user_logger.info(f"Using proxy: {socks5_proxy}")
+    user_logger.info(f"Using proxy: {socks5_proxy} with device ID: {device_id}")
     
     if email not in connected_proxies_count:
-        connected_proxies_count[email] = 0  # Ensure the count starts from 0 if not initialized
+        connected_proxies_count[email] = 0
     
     connected_users.add(email)
 
@@ -175,7 +176,7 @@ async def connect_to_wss(email, socks5_proxy, user_id, user_number):
                         "id": message["id"],
                         "origin_action": "AUTH",
                         "result": {
-                            "browser_id": user_number,
+                            "browser_id": device_id,
                             "user_id": user_id,
                             "user_agent": custom_headers['User-Agent'],
                             "timestamp": int(time.time()),
@@ -205,11 +206,10 @@ async def connect_to_wss(email, socks5_proxy, user_id, user_number):
             
             unused_proxies.append(socks5_proxy)
 
-            # Ensure that the proxy count is correctly reduced when an error occurs
             if connected_proxies_count[email] > 0:
                 connected_proxies_count[email] -= 1
 
-            user_logger.info("AUTH Success")
+            user_logger.info(f"Correct connected proxies: {connected_proxies_count[email]}")
 
             if unused_proxies:
                 socks5_proxy = random.choice(unused_proxies)
@@ -245,12 +245,11 @@ async def main():
     unused_proxies.extend(proxy_list)
 
     tasks = []
-    for user_number, (email, password, proxy) in enumerate(zip(emails, passwords, proxy_list), 1):
-        user_id, access_token, user_logger = await login_and_get_user_id(email, password, user_number)
-        tasks.append(asyncio.ensure_future(connect_to_wss(email, proxy, user_id=user_id, user_number=user_number)))
+    for email, password, proxy in zip(emails, passwords, proxy_list):
+        user_id, access_token, user_logger = await login_and_get_user_id(email, password)
+        tasks.append(asyncio.ensure_future(connect_to_wss(email, proxy, user_id=user_id)))
 
     await asyncio.gather(*tasks)
-
 
 if __name__ == '__main__':
     asyncio.run(main())
