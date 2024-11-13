@@ -1,3 +1,4 @@
+#for email login using sock5 http or https
 import sys
 import asyncio
 import random
