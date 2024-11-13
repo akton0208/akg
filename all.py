@@ -4,105 +4,47 @@ import asyncio
 import random
 import ssl
 import json
+import time
 import uuid
-import aiohttp
 from loguru import logger
 from websockets_proxy import Proxy, proxy_connect
-import socks
-import socket
 from fake_useragent import UserAgent
 
+# Remove timestamp from log output and include user ID in the logs
 logger.remove()
 logger.add(sys.stdout, format="{extra[user_id]:<20} | {level} | {message}", level="INFO")
 
+# This will track the proxies that have been used
 used_proxies = set()
+# This will track proxies that are available for future use
 unused_proxies = []
+
+# Dictionary to track connected proxies count per user
 connected_proxies_count = {}
+
+# Dictionary to track which user_ids are currently connected
 connected_users = set()
 
-def parse_socks5_proxy(proxy_url):
-    """Parse SOCKS5 proxy URL and extract the components"""
-    # Remove the socks5:// protocol prefix
-    proxy_url = proxy_url[len("socks5://"):]
-
-    # Split the URL into user info and host:port
-    user_info, host_and_port = proxy_url.split('@') if '@' in proxy_url else (None, proxy_url)
-    proxy_host, proxy_port = host_and_port.split(':')
-    proxy_port = int(proxy_port)
-    
-    # Extract username and password if available
-    if user_info:
-        proxy_username, proxy_password = user_info.split(':')
-    else:
-        proxy_username = proxy_password = None
-    
-    return proxy_host, proxy_port, proxy_username, proxy_password
-
-async def get_proxy_session(proxy):
-    """Choose the appropriate proxy handling method based on protocol"""
-    if isinstance(proxy, str):
-        if proxy.startswith("socks5://"):
-            # SOCKS5 proxy
-            proxy_host, proxy_port, proxy_username, proxy_password = parse_socks5_proxy(proxy)
-            socks.set_default_proxy(socks.SOCKS5, proxy_host, proxy_port, True, proxy_username, proxy_password)
-            socket.socket = socks.socksocket
-            return None  # No need to return a session, just modify socket configuration
-        elif proxy.startswith("http://") or proxy.startswith("https://"):
-            # HTTP or HTTPS proxy
-            connector = aiohttp.TCPConnector(ssl=False)
-            return aiohttp.ClientSession(connector=connector)
-        else:
-            raise ValueError(f"Unsupported proxy type: {proxy}")
-    elif isinstance(proxy, Proxy):  # If proxy is an AsyncioProxy object
-        return proxy  # Handle it as it is
-    else:
-        raise ValueError(f"Invalid proxy object type: {type(proxy)}")
-
-async def handle_websocket_connection(websocket, custom_id, user_id, device_id, user_logger):
-    async def send_ping():
-        while True:
-            try:
-                send_message = json.dumps(
-                    {"id": str(uuid.uuid4()), "version": "1.0.0", "action": "PING", "data": {}})
-                user_logger.info(send_message)
-                await websocket.send(send_message)
-                await asyncio.sleep(random.randint(119, 120))
-            except websockets.exceptions.ConnectionClosedError as e:
-                user_logger.error(f"WebSocket connection closed: {e}")
-                break
-            except Exception as e:
-                user_logger.error(f"Unexpected error: {e}")
-                break
-
-    await asyncio.sleep(1)
-    asyncio.create_task(send_ping())
-
-    while True:
-        response = await websocket.recv()
-        message = json.loads(response)
-        user_logger.info(message)
-
-        if message.get("action") == "PONG":
-            pong_response = {"id": message["id"], "origin_action": "PONG"}
-            user_logger.debug(pong_response)
-            await websocket.send(json.dumps(pong_response))
-
-async def connect_to_wss(custom_id, user_id, proxy):
+async def connect_to_wss(custom_id, user_id, socks5_proxy):
     user_agent = UserAgent(os=['windows', 'macos', 'linux'], browsers='chrome')
     random_user_agent = user_agent.random
-    device_id = str(uuid.uuid3(uuid.NAMESPACE_DNS, proxy))
+    device_id = str(uuid.uuid3(uuid.NAMESPACE_DNS, socks5_proxy))
     
-    user_logger = logger.bind(user_id=custom_id)
+    # Bind custom_id to the logger context using extra
+    user_logger = logger.bind(user_id=custom_id)  # Create a new logger with the custom_id in extra context
     
-    user_logger.info(f"Using proxy: {proxy} with device ID: {device_id}")
+    user_logger.info(f"Using proxy: {socks5_proxy} with device ID: {device_id}")
     
+    # Initialize the count for this user if not already present
     if custom_id not in connected_proxies_count:
         connected_proxies_count[custom_id] = 0
     
+    # Add this custom_id to the connected users to avoid multiple connections
     connected_users.add(custom_id)
 
-    while True:
+    while True:  # Outer loop to handle reconnect attempts
         try:
+            # Wait a random time before attempting the connection
             await asyncio.sleep(random.randint(1, 10) / 10)
             custom_headers = {
                 "User-Agent": random_user_agent,
@@ -110,68 +52,148 @@ async def connect_to_wss(custom_id, user_id, proxy):
             ssl_context = ssl.create_default_context()
             ssl_context.check_hostname = False
             ssl_context.verify_mode = ssl.CERT_NONE
-            uri = "wss://proxy.wynd.network:4444/"  # Single endpoint now
+            urilist = ["wss://proxy.wynd.network:4444/", "wss://proxy.wynd.network:4650/"]
+            uri = random.choice(urilist)
             server_hostname = "proxy.wynd.network"
+            proxy = Proxy.from_url(socks5_proxy)
 
-            proxy_session = await get_proxy_session(proxy)
+            # Mark the chosen proxy as used
+            used_proxies.add(socks5_proxy)
+            unused_proxies.remove(socks5_proxy)
 
-            used_proxies.add(proxy)
-            unused_proxies.remove(proxy)
+            # Try to establish the WebSocket connection
+            async with proxy_connect(uri, proxy=proxy, ssl=ssl_context, server_hostname=server_hostname,
+                                     extra_headers=custom_headers) as websocket:
 
-            # Check if it's a SOCKS5 proxy and use it accordingly
-            if proxy.startswith("socks5://"):
-                proxy_obj = Proxy.from_url(proxy)
-                async with proxy_connect(uri, proxy=proxy_obj, ssl=ssl_context, server_hostname=server_hostname,
-                                         extra_headers=custom_headers) as websocket:
-                    await handle_websocket_connection(websocket, custom_id, user_id, device_id, user_logger)
+                async def send_ping():
+                    while True:
+                        try:
+                            send_message = json.dumps(
+                                {"id": str(uuid.uuid4()), "version": "1.0.0", "action": "PING", "data": {}})
+                            user_logger.info(send_message)
+                            await websocket.send(send_message)
+                            await asyncio.sleep(random.randint(119, 120))
+                        except websockets.exceptions.ConnectionClosedError as e:
+                            user_logger.error(f"WebSocket connection closed: {e}")
+                            break  # Break the loop and reconnect
+                        except Exception as e:
+                            user_logger.error(f"Unexpected error: {e}")
+                            break  # Break the loop and reconnect
 
-            elif proxy.startswith("http://") or proxy.startswith("https://"):
-                # Use websockets proxy connect for HTTP/HTTPS
-                proxy_obj = Proxy.from_url(proxy)
-                async with proxy_connect(uri, proxy=proxy_obj, ssl=ssl_context, server_hostname=server_hostname,
-                                         extra_headers=custom_headers) as websocket:
-                    await handle_websocket_connection(websocket, custom_id, user_id, device_id, user_logger)
+                await asyncio.sleep(1)
+                asyncio.create_task(send_ping())
+
+                # First connect - when we receive AUTH, we consider the connection successful
+                message = await websocket.recv()
+                message = json.loads(message)
+                if message.get("action") == "AUTH":
+                    auth_response = {
+                        "id": message["id"],
+                        "origin_action": "AUTH",
+                        "result": {
+                            "browser_id": device_id,
+                            "user_id": user_id,
+                            "user_agent": custom_headers['User-Agent'],
+                            "timestamp": int(time.time()),
+                            "device_type": "desktop",
+                            "version": "4.28.2",
+                        }
+                    }
+                    user_logger.info(auth_response)
+                    await websocket.send(json.dumps(auth_response))
+
+                    # At this point, we count this as a successful connection
+                    connected_proxies_count[custom_id] += 1
+                    user_logger.info(f"Correct connected proxies: {connected_proxies_count[custom_id]}")
+
+                while True:
+                    response = await websocket.recv()
+                    message = json.loads(response)
+                    user_logger.info(message)
+
+                    # If we get PONG, it's a valid response to keep the connection alive
+                    if message.get("action") == "PONG":
+                        pong_response = {"id": message["id"], "origin_action": "PONG"}
+                        user_logger.debug(pong_response)
+                        await websocket.send(json.dumps(pong_response))
 
         except Exception as e:
-            user_logger.error(f"Error with proxy {proxy}: {e}")
+            user_logger.error(f"Error with proxy {socks5_proxy}: {e}")
             user_logger.error("Switching to another proxy.")
-            unused_proxies.append(proxy)
+            
+            # If connection fails, add this proxy back to the unused proxies list
+            unused_proxies.append(socks5_proxy)
 
+            # Decrease the count of connected proxies for the user if the proxy was already counted
             if connected_proxies_count[custom_id] > 0:
                 connected_proxies_count[custom_id] -= 1
 
+            # Output the current count after proxy failure
             user_logger.info(f"Correct connected proxies: {connected_proxies_count[custom_id]}")
 
+            # Choose a proxy from unused proxies
             if unused_proxies:
-                proxy = random.choice(unused_proxies)
-                used_proxies.add(proxy)
-                user_logger.info(f"New proxy selected: {proxy}")
+                socks5_proxy = random.choice(unused_proxies)
+                used_proxies.add(socks5_proxy)  # Mark the newly selected proxy as used
+                user_logger.info(f"New proxy selected: {socks5_proxy}")
             else:
                 user_logger.error("No available proxies left.")
+
+            # Remove user from connected_users only if it exists
             if custom_id in connected_users:
                 connected_users.remove(custom_id)
 
+
+
+# Periodically output the current status of connected proxies
+async def output_connected_proxies():
+    while True:
+        await asyncio.sleep(30)
+        # Open the log.txt file in write mode to clear the contents
+        with open('log.txt', 'w') as log_file:
+            # Write the header (optional)
+            log_file.write(f"{'User ID':<20} | {'Correct connected proxies':<25}\n")
+            log_file.write("="*50 + "\n")  # Divider line
+            
+            for custom_id, count in connected_proxies_count.items():
+                # Bind custom_id to the logger context
+                user_logger = logger.bind(user_id=custom_id)
+                log_message = f"{custom_id:<20} | {count:<25}\n"  # Format with fixed widths
+                user_logger.info(log_message)  # Log to console
+                log_file.write(log_message)  # Write to log.txt
+
 async def main():
+    # Read user IDs and custom identifiers from 'id.txt' file
     with open('id.txt', 'r') as file:
         lines = file.readlines()
-        custom_ids = [line.strip().split(":")[0] for line in lines]
-        user_ids = [line.strip().split(":")[1] for line in lines]
+        custom_ids = [line.strip().split(":")[0] for line in lines]  # Custom identifiers (e.g. XXXX)
+        user_ids = [line.strip().split(":")[1] for line in lines]  # Actual user IDs (e.g. 2oee0OtMo9XsSXJati8rBORh5fh)
 
+    # Read proxies from 'proxy.txt' file
     with open('proxy.txt', 'r') as file:
         proxy_list = file.read().splitlines()
 
+    # Ensure the number of proxies is at least equal to the number of user IDs
     if len(proxy_list) < len(user_ids):
         raise ValueError("Not enough proxies for the number of user IDs.")
 
+    # Shuffle proxies to ensure random distribution
     random.shuffle(proxy_list)
 
+    # Initialize unused_proxies with all proxies
     unused_proxies.extend(proxy_list)
 
+    # Create tasks to connect each user ID with a unique proxy
     tasks = []
-    for custom_id, user_id, proxy in zip(custom_ids, user_ids, proxy_list):
-        tasks.append(asyncio.ensure_future(connect_to_wss(custom_id, user_id, proxy)))
+    for custom_id, user_id, socks5_proxy in zip(custom_ids, user_ids, proxy_list):
+        tasks.append(asyncio.ensure_future(connect_to_wss(custom_id, user_id, socks5_proxy)))
     
+    # Create a task to output the connected proxies status every 30 seconds
+    tasks.append(asyncio.ensure_future(output_connected_proxies()))
+    
+    # Wait for all tasks to finish
     await asyncio.gather(*tasks)
 
 if __name__ == '__main__':
     asyncio.run(main())
+
