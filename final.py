@@ -39,7 +39,7 @@ class ProxyManager:
 
 # Remove default logger and add custom configuration
 logger.remove()
-logger.add(sys.stdout, format="{extra[email]:<20} | {level} | {message}", level="INFO")
+logger.add(sys.stdout, format="{extra[email]:<30} | {level} | {message}", level="INFO")
 
 
 user_id_cache = {}
@@ -110,7 +110,7 @@ async def send_ping(websocket, user_logger):
             send_message = json.dumps({"id": str(uuid.uuid4()), "version": "1.0.0", "action": "PING", "data": {}})
             user_logger.info(f"Sending PING: {send_message}")
             await websocket.send(send_message)
-            await asyncio.sleep(random.randint(2, 3))  # Shortened interval to 2-3 seconds
+            await asyncio.sleep(random.randint(119, 120))  #######################
         except websockets.exceptions.ConnectionClosedError as e:
             user_logger.error(f"WebSocket connection closed: {e}")
             break
