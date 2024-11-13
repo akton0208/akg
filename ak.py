@@ -72,7 +72,7 @@ async def connect_to_wss(custom_id, user_id, socks5_proxy):
                                 {"id": str(uuid.uuid4()), "version": "1.0.0", "action": "PING", "data": {}})
                             user_logger.debug(send_message)
                             await websocket.send(send_message)
-                            await asyncio.sleep(5)
+                            await asyncio.sleep(random.randint(119, 120))
                         except websockets.exceptions.ConnectionClosedError as e:
                             user_logger.error(f"WebSocket connection closed: {e}")
                             break  # Break the loop and reconnect
