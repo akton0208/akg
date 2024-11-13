@@ -1,4 +1,3 @@
-#for email login using sock5 http or https
 import sys
 import asyncio
 import random
@@ -13,8 +12,9 @@ import socket
 from fake_useragent import UserAgent
 import time
 
+# Configure the logger to show the email in the log messages
 logger.remove()
-logger.add(sys.stdout, format="{extra[user_id]:<20} | {level} | {message}", level="INFO")
+logger.add(sys.stdout, format="{extra[email]:<20} | {level} | {message}", level="INFO")
 
 used_proxies = set()
 unused_proxies = []
@@ -62,7 +62,8 @@ async def login_and_get_user_id(email, password):
         'username': email,
     }
 
-    user_logger = logger.bind(user_id=email)
+    # Bind email to the logger context
+    user_logger = logger.bind(email=email)
 
     async with aiohttp.ClientSession() as session:
         user_logger.info(f"Sending login request for {email}")
@@ -79,12 +80,12 @@ async def login_and_get_user_id(email, password):
         access_token = res_json["result"]["data"]["accessToken"]
 
         # Bind user_id to the logger for subsequent actions
-        user_logger = logger.bind(user_id=user_id)
+        user_logger = logger.bind(email=email)
         user_logger.info(f"Login successful for {email}: user_id={user_id}, access_token={access_token}")
 
         return user_id, access_token, user_logger
 
-async def handle_websocket_connection(websocket, custom_id, user_id, device_id, user_logger):
+async def handle_websocket_connection(websocket, email, user_id, device_id, user_logger):
     async def send_ping():
         while True:
             try:
@@ -112,22 +113,22 @@ async def handle_websocket_connection(websocket, custom_id, user_id, device_id, 
             user_logger.debug(pong_response)
             await websocket.send(json.dumps(pong_response))
 
-async def connect_to_wss(custom_id, socks5_proxy, user_id):
+async def connect_to_wss(email, socks5_proxy, user_id):
     user_agent = UserAgent(os=['windows', 'macos', 'linux'], browsers='chrome')
     random_user_agent = user_agent.random
     device_id = str(uuid.uuid3(uuid.NAMESPACE_DNS, socks5_proxy))
     
-    # Bind custom_id to the logger context using extra
-    user_logger = logger.bind(user_id=user_id)  # Now using user_id here for logging
+    # Bind email to the logger context
+    user_logger = logger.bind(email=email)
     
     user_logger.info(f"Using proxy: {socks5_proxy} with device ID: {device_id}")
     
-    # Initialize the count for this user if not already present
-    if custom_id not in connected_proxies_count:
-        connected_proxies_count[custom_id] = 0
+    # Initialize the count for this email if not already present
+    if email not in connected_proxies_count:
+        connected_proxies_count[email] = 0
     
-    # Add this custom_id to the connected users to avoid multiple connections
-    connected_users.add(custom_id)
+    # Add this email to the connected users to avoid multiple connections
+    connected_users.add(email)
 
     while True:  # Outer loop to handle reconnect attempts
         try:
@@ -190,8 +191,8 @@ async def connect_to_wss(custom_id, socks5_proxy, user_id):
                     await websocket.send(json.dumps(auth_response))
 
                     # At this point, we count this as a successful connection
-                    connected_proxies_count[custom_id] += 1
-                    user_logger.info(f"Correct connected proxies: {connected_proxies_count[custom_id]}")
+                    connected_proxies_count[email] += 1
+                    user_logger.info(f"Correct connected proxies: {connected_proxies_count[email]}")
 
                 while True:
                     response = await websocket.recv()
@@ -211,12 +212,12 @@ async def connect_to_wss(custom_id, socks5_proxy, user_id):
             # If connection fails, add this proxy back to the unused proxies list
             unused_proxies.append(socks5_proxy)
 
-            # Decrease the count of connected proxies for the user if the proxy was already counted
-            if connected_proxies_count[custom_id] > 0:
-                connected_proxies_count[custom_id] -= 1
+            # Decrease the count of connected proxies for the email if the proxy was already counted
+            if connected_proxies_count[email] > 0:
+                connected_proxies_count[email] -= 1
 
             # Output the current count after proxy failure
-            user_logger.info(f"Correct connected proxies: {connected_proxies_count[custom_id]}")
+            user_logger.info(f"Correct connected proxies: {connected_proxies_count[email]}")
 
             # Choose a proxy from unused proxies
             if unused_proxies:
@@ -227,30 +228,26 @@ async def connect_to_wss(custom_id, socks5_proxy, user_id):
                 user_logger.error("No available proxies left.")
 
             # Remove user from connected_users only if it exists
-            if custom_id in connected_users:
-                connected_users.remove(custom_id)
+            if email in connected_users:
+                connected_users.remove(email)
 
 async def main():
     with open('id.txt', 'r') as file:
-        lines = file.readlines()
-        custom_ids = []
         emails = []
         passwords = []
 
-        for line in lines:
+        for line in file.readlines():
             parts = line.strip().split(":")
-            custom_ids.append(parts[0])  # Always extract custom ID (XXXX)
-
-            if len(parts) == 3:
-                emails.append(parts[1])  # Email
-                passwords.append(parts[2])  # Password
+            if len(parts) == 2:
+                emails.append(parts[0])
+                passwords.append(parts[1])
             else:
                 raise ValueError(f"Invalid line format in id.txt: {line.strip()}")
 
     with open('proxy.txt', 'r') as file:
         proxy_list = file.read().splitlines()
 
-    if len(proxy_list) < len(custom_ids):
+    if len(proxy_list) < len(emails):
         raise ValueError("Not enough proxies for the number of user IDs.")
 
     random.shuffle(proxy_list)
@@ -258,15 +255,14 @@ async def main():
     unused_proxies.extend(proxy_list)
 
     tasks = []
-    for custom_id, email, password, proxy in zip(custom_ids, emails, passwords, proxy_list):
+    for email, password, proxy in zip(emails, passwords, proxy_list):
         # Get user_id and access_token from login
         user_id, access_token, user_logger = await login_and_get_user_id(email, password)  # Fetch user_id and access_token
         
         # Pass the user_id to connect_to_wss
-        tasks.append(asyncio.ensure_future(connect_to_wss(custom_id, proxy, user_id=user_id)))
+        tasks.append(asyncio.ensure_future(connect_to_wss(email, proxy, user_id=user_id)))
 
     await asyncio.gather(*tasks)
-
 
 if __name__ == '__main__':
     asyncio.run(main())
